@@ -27,6 +27,8 @@ case "$ARCH" in
 esac
 
 # 启用 devtoolset(amd64=11 / arm64=10,基础镜像已建统一软链 /opt/rh/devtoolset)
+# set -u 下 devtoolset 的 enable 脚本引用未定义变量会报 unbound variable,先设空默认值
+export MANPATH="${MANPATH:-}" PERL5LIB="${PERL5LIB:-}" INFOPATH="${INFOPATH:-}"
 if [ -f /opt/rh/devtoolset/enable ]; then source /opt/rh/devtoolset/enable; fi
 
 echo "============================================"
