@@ -1,0 +1,166 @@
+name: Build Binary & Release
+
+# CI 流水线:手动触发,amd64/arm64 在各自原生 runner 上并行编译 Redis 二进制 → 发 Release。
+# 职责单一:只编译 + 发版,不做 Docker 镜像。
+#
+# 入参:
+#   redis_version - Redis 版本号(如 7.4.1)
+#   glib_version  - glibc 版本(2.28/2.17),决定用哪个基础镜像
+#
+# 结构(arm64 用原生 runner,不走 QEMU):
+#   compile-amd64 - ubuntu-latest(原生 amd64)
+#   compile-arm64 - ubuntu-24.04-arm(原生 arm64,免费)
+#   release       - needs 上面两个,合并两架构 tarball 发到同一 Release tag
+#
+# 注意:不使用 matrix + runs-on: ${{ matrix.runner }}。实测该写法触发 startup_failure
+# (GitHub 启动阶段无法可靠解析动态 runner label)。故拆成两个独立 job,runs-on 用静态字符串。
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      redis_version:
+        description: 'Redis 版本号(如 7.4.1)'
+        required: true
+        default: '7.4.1'
+        type: string
+      glib_version:
+        description: 'glibc 版本(决定用哪个基础镜像)'
+        required: true
+        type: choice
+        options:
+          - '2.28'
+          - '2.17'
+        default: '2.28'
+
+jobs:
+  # ============================================================
+  # Job 1: amd64 编译(原生 amd64 runner)
+  # ============================================================
+  compile-amd64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 编译二进制(单架构),产物输出到 output/
+      # 基础镜像在 runner 本地构建(buildx gha 缓存加速),无需登录外部 registry
+      - name: Build Binary (amd64)
+        run: bash build/ci-build-binary.sh
+        env:
+          REDIS_VERSION: ${{ inputs.redis_version }}
+          GLIB_VERSION: ${{ inputs.glib_version }}
+          ARCH: amd64
+
+      # 上传 tarball 供 release job 下载(artifact 名带 glib 版本与架构,避免冲突)
+      - name: Upload Binary Artifact (amd64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-binary-${{ inputs.redis_version }}-glib${{ inputs.glib_version }}-amd64
+          path: output/*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  # ============================================================
+  # Job 2: arm64 编译(原生 arm64 runner,免费,不走 QEMU)
+  # ============================================================
+  compile-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Binary (arm64)
+        run: bash build/ci-build-binary.sh
+        env:
+          REDIS_VERSION: ${{ inputs.redis_version }}
+          GLIB_VERSION: ${{ inputs.glib_version }}
+          ARCH: arm64
+
+      - name: Upload Binary Artifact (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-binary-${{ inputs.redis_version }}-glib${{ inputs.glib_version }}-arm64
+          path: output/*.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+
+  # ============================================================
+  # Job 3: 发 Release(两架构 tarball 挂同一个 Release tag)
+  # ------------------------------------------------------------
+  # Release tag 以 Redis 版本为准(v<version>),不含 glib 后缀。
+  # 同一 Redis 版本的不同 glib 变体(glib2.17/2.28)会往同一个 Release 追加
+  # assets(tarball 文件名含 .glibc<ver> 后缀,不会冲突)。
+  # 故同一版本可多次触发(每次选不同 glib_version),产物累积到同一 Release。
+  # ============================================================
+  release:
+    needs: [compile-amd64, compile-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: redis-binary-*
+          merge-multiple: true
+          path: release-assets/
+
+      - name: List Release Assets
+        run: |
+          echo "=== 本次 Release 产物列表 ==="
+          ls -lh release-assets/
+
+      - name: Generate Checksums
+        run: |
+          cd release-assets/
+          sha256sum *.tar.gz > redis-${{ inputs.redis_version }}.sha256sum.txt
+          cat redis-${{ inputs.redis_version }}.sha256sum.txt
+
+      - name: Create/Update Release and Upload Binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.redis_version }}
+          name: Redis ${{ inputs.redis_version }}
+          body: |
+            ## Redis ${{ inputs.redis_version }}
+
+            便携式二进制包,自带 lib/ 运行时依赖(libssl/libcrypto,TLS 可用),
+            跨发行版可移植。一个 Release 下汇总该 Redis 版本的全部变体:
+
+            - **glibc 版本**: `glibc2.17`(CentOS 7 基线,兼容老系统)/ `glibc2.28`(Rocky 8 基线)
+            - **架构**: `amd64`(x86_64)/ `arm64`(aarch64)
+
+            ### 如何选择包
+            按目标机的 **CPU 架构** + **glibc 版本** 选对应 tarball。查 glibc 版本:`ldd --version`。
+            - 向后兼容:glibc 2.17 的包能在 ≥ 2.17 的系统跑;不确定就选低版本(2.17)。
+            - 文件名格式:`redis-<version>-linux-<arch>.glibc<ver>.tar.gz`
+
+            ### 安装(以 glibc2.28 + amd64 为例)
+            ```bash
+            # 1. 解压
+            tar -xzf redis-${{ inputs.redis_version }}-linux-amd64.glibc2.28.tar.gz -C /usr/local/
+
+            # 2. 加入 PATH(永久生效)
+            echo 'export PATH=/usr/local/redis-${{ inputs.redis_version }}-linux-amd64/bin:$PATH' >> /etc/profile
+            source /etc/profile
+
+            # 3. 测试(TLS 已内置,libssl 在包内 lib/ 目录)
+            redis-server --version
+            redis-cli --version
+            ```
+          files: |
+            release-assets/*.tar.gz
+            release-assets/*.sha256sum.txt
+          generate_release_notes: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
