@@ -6,10 +6,12 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # 环境变量(由 build/Dockerfile 的 ARG 注入):
 #   REDIS_VERSION - Redis 版本号(必填,如 7.4.1)
-#   GLIBC_VERSION - glibc 版本(必填,2.17 / 2.28),只用于产物文件名后缀
 #   ARCH          - 目标架构(必填,amd64 / arm64),只用于产物目录/文件名
 #
-# 产物:/root/output/redis-<ver>-linux-<arch>.glibc<ver>.tar.gz
+# 编译基线:glibc 2.17(CentOS 7),产物可在所有 glibc >= 2.17 的系统上运行
+# (CentOS 7/8、Rocky、Debian、Ubuntu、kylin v10、openEuler 等)。
+#
+# 产物:/root/output/redis-<ver>-linux-<arch>.tar.gz
 #   redis-<ver>-linux-<arch>/
 #   ├── bin/  redis-server redis-cli redis-benchmark
 #   │         redis-sentinel redis-check-aof redis-check-rdb
@@ -17,7 +19,6 @@ set -euo pipefail
 # ============================================================
 
 REDIS_VERSION="${REDIS_VERSION:?ERROR: 必须设置 REDIS_VERSION}"
-GLIBC_VERSION="${GLIBC_VERSION:?ERROR: 必须设置 GLIBC_VERSION(2.17 或 2.28)}"
 ARCH="${ARCH:?ERROR: 必须设置 ARCH(amd64 或 arm64)}"
 
 case "$ARCH" in
@@ -25,12 +26,11 @@ case "$ARCH" in
     *) echo "❌ 无效 ARCH: $ARCH(应为 amd64 或 arm64)"; exit 1 ;;
 esac
 
-# 启用新工具链(两种基础镜像哪个存在用哪个)
-if   [ -f /opt/rh/devtoolset/enable ];    then source /opt/rh/devtoolset/enable; fi
-if   [ -f /opt/rh/gcc-toolset-12/enable ]; then source /opt/rh/gcc-toolset-12/enable; fi
+# 启用 devtoolset(amd64=11 / arm64=10,基础镜像已建统一软链 /opt/rh/devtoolset)
+if [ -f /opt/rh/devtoolset/enable ]; then source /opt/rh/devtoolset/enable; fi
 
 echo "============================================"
-echo "  编译 Redis ${REDIS_VERSION} (glibc ${GLIBC_VERSION}, ${ARCH})"
+echo "  编译 Redis ${REDIS_VERSION} (glibc 2.17, ${ARCH})"
 echo "  gcc: $(gcc --version | head -1)"
 echo "  glibc: $(ldd --version | head -1)"
 echo "  openssl: $(openssl version)"
@@ -59,7 +59,7 @@ SRC_DIR="redis-${REDIS_VERSION}"
 cd "${SRC_DIR}"
 
 # ------------------------------------------------------------
-# 编译(BUILD_TLS=yes;jemalloc 默认)
+# 编译(BUILD_TLS=yes;jemalloc 默认静态链入)
 # ------------------------------------------------------------
 make -j"$(nproc)" BUILD_TLS=yes
 
@@ -93,20 +93,28 @@ ldd "${STAGE}/bin/redis-server" | awk '/=> \// {print $3}' | grep -E 'lib(ssl|cr
 patchelf --set-rpath '$ORIGIN/../lib' "${STAGE}"/bin/*
 
 # ------------------------------------------------------------
+# 兼容性自检:二进制引用的最高 GLIBC 符号版本必须 <= 2.17
+# ------------------------------------------------------------
+MAX_GLIBC=$(objdump -T "${STAGE}/bin/redis-server" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+echo "==> 二进制要求的最高 GLIBC 符号版本: ${MAX_GLIBC}"
+if [ "${MAX_GLIBC}" \> "GLIBC_2.17" ]; then
+    echo "❌ 兼容性检查失败: ${MAX_GLIBC} > GLIBC_2.17,产物无法在 CentOS 7 上运行"
+    exit 1
+fi
+
+# ------------------------------------------------------------
 # 冒烟测试(在编译容器内验证能跑起来)
 # ------------------------------------------------------------
 "${STAGE}/bin/redis-server" --version
 "${STAGE}/bin/redis-cli" --version
-if [ -f "${STAGE}/lib/libssl.so.1.1" ]; then
-    # 验证 RPATH 生效:解析到的 libssl 应来自包内 lib/
-    ldd "${STAGE}/bin/redis-server" | grep libssl
-fi
+# 验证 RPATH 生效:解析到的 libssl 应来自包内 lib/
+ldd "${STAGE}/bin/redis-server" | grep libssl
 
 # ------------------------------------------------------------
 # 打 tar.gz
 # ------------------------------------------------------------
 cd /root/output
-TARBALL="${PKG_NAME}.glibc${GLIBC_VERSION}.tar.gz"
+TARBALL="${PKG_NAME}.tar.gz"
 tar czf "${TARBALL}" "${PKG_NAME}"
 rm -rf "${STAGE}"
 ls -lh "${TARBALL}"
