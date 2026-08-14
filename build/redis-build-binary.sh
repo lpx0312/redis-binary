@@ -70,8 +70,14 @@ cd "${SRC_DIR}"
 
 # ------------------------------------------------------------
 # 编译(BUILD_TLS=yes;jemalloc 默认静态链入)
+# 注意:Redis 的 Makefile 里 OpenSSL 的头文件路径只认 OPENSSL_PREFIX 变量,
+# pkg-config 仅用于链接参数(--libs),必须显式传 OPENSSL_PREFIX 才能找到 ssl.h
 # ------------------------------------------------------------
-make -j"$(nproc)" BUILD_TLS=yes
+TLS_ARGS="BUILD_TLS=yes"
+if [ -d /usr/local/openssl-1.1 ]; then
+    TLS_ARGS="${TLS_ARGS} OPENSSL_PREFIX=/usr/local/openssl-1.1"
+fi
+make -j"$(nproc)" ${TLS_ARGS}
 
 # ------------------------------------------------------------
 # 收集二进制 + TLS 运行库,打包
