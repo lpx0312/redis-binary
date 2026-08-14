@@ -36,6 +36,16 @@ echo "  glibc: $(ldd --version | head -1)"
 echo "  openssl: $(openssl version)"
 echo "============================================"
 
+# 预检:Redis 7.x 的 Makefile 用 pkg-config 探测 OpenSSL,
+# 探测不到会静默编译出无 TLS 的二进制或直接报错,提前失败更清晰
+if ! pkg-config --modversion openssl >/dev/null 2>&1; then
+    echo "❌ pkg-config 探测不到 openssl,检查基础镜像的 PKG_CONFIG_PATH 设置"
+    exit 1
+fi
+echo "pkg-config openssl: $(pkg-config --modversion openssl)"
+echo "pkg-config cflags:  $(pkg-config --cflags openssl)"
+echo "pkg-config libs:    $(pkg-config --libs openssl)"
+
 WORKDIR=/root/build
 mkdir -p "${WORKDIR}" && cd "${WORKDIR}"
 

@@ -76,8 +76,10 @@ RUN set -e && \
 #   arm64 -> devtoolset-10(GCC 10.2.1;aarch64 的 SCL 无 devtoolset-11-gcc 本体)
 # ============================================================
 # perl/perl-core:OpenSSL 1.1.1 的 ./configure 需要 Perl 5(centos:7 基础镜像不带)
+# pkgconfig:Redis 7.x 的 Makefile 用 pkg-config 探测 OpenSSL 头文件/库路径,
+#            缺了它会静默拿到空参数,编译时报 openssl/ssl.h: No such file or directory
 RUN set -e && \
-    yum install -y ca-certificates curl tar make zlib-devel perl perl-core && \
+    yum install -y ca-certificates curl tar make zlib-devel perl perl-core pkgconfig && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         DTS=10; \
     else \
@@ -163,6 +165,7 @@ RUN set -e && \
 ENV PATH="/usr/local/openssl-1.1/bin:${PATH}" \
     PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
 
-# 打印基线信息(glibc 版本 + OpenSSL 版本)
+# 打印基线信息(glibc 版本 + OpenSSL 版本 + pkg-config 探测结果)
 RUN ldd --version | head -1 && \
-    echo "OpenSSL: $(openssl version)"
+    echo "OpenSSL: $(openssl version)" && \
+    echo "pkg-config openssl: $(pkg-config --modversion openssl)"
