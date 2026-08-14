@@ -75,8 +75,9 @@ RUN set -e && \
 #   amd64 -> devtoolset-11(GCC 11.2.1)
 #   arm64 -> devtoolset-10(GCC 10.2.1;aarch64 的 SCL 无 devtoolset-11-gcc 本体)
 # ============================================================
+# perl/perl-core:OpenSSL 1.1.1 的 ./configure 需要 Perl 5(centos:7 基础镜像不带)
 RUN set -e && \
-    yum install -y ca-certificates curl tar make zlib-devel && \
+    yum install -y ca-certificates curl tar make zlib-devel perl perl-core && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         DTS=10; \
     else \
