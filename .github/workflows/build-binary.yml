@@ -141,3 +141,5 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# vim: set yaml ts=2 sw=2 et:
