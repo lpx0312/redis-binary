@@ -55,12 +55,13 @@ docker buildx build \
 
 # ------------------------------------------------------------
 # Step 2: 构建编译镜像(内含下载源码+编译+打包+冒烟测试)
-# 单架构构建,--load 载入本地 docker,再用 docker create + docker cp 提取产物
+# 用经典 docker build(default 驱动)而非 buildx:buildx 的 docker-container
+# 驱动解析 FROM 时只查 registry,看不到上面 --load 进本地镜像仓库的
+# 基础镜像;default 驱动直接用本地镜像仓库,无需推外部 registry。
 # ------------------------------------------------------------
 echo ""
 echo ">>> 构建编译镜像并提取产物..."
-docker buildx build \
-    --load \
+DOCKER_BUILDKIT=1 docker build \
     --build-arg "BASE_SYSTEM_VERSION=${BASE_TAG}" \
     --build-arg "REDIS_VERSION=${REDIS_VERSION}" \
     --build-arg "TARGETARCH=${ARCH}" \
